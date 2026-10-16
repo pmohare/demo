@@ -62,5 +62,5 @@ stages:
               azureSubscription: 'Azure-CICD-Connection-Deployment'
               appType: webAppLinux
               appName: 'pmohare-demo1'
-              package: '$(Pipeline.Workspace)/java-build/*.jar'
+              package: '$(Pipeline.Workspace)/java-build/*.war'
               runtimeStack: 'JAVA|21-java21'
