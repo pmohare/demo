@@ -1,19 +1,40 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
 
-trigger:
-- master
+# Java 21 CI Pipeline
+# Source: GitHub
+# Build: Maven
+# Output: java-build artifact
+
+trigger: none
+pr: none
 
 pool:
   vmImage: ubuntu-latest
 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+  # 1. Checkout source code
+  - checkout: self
+    displayName: 'Checkout source code'
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+  # 2. Configure Java 21
+  - task: JavaToolInstaller@0
+    displayName: 'Set up Java 21'
+    inputs:
+      versionSpec: '21'
+      jdkArchitectureOption: 'x64'
+      jdkSourceOption: 'PreInstalled'
+
+  # 3. Verify Java and Maven
+  - script: |
+      java -version
+      mvn -version
+    displayName: 'Verify Java and Maven'
+
+  # 4. Build project and run unit tests
+  - script: |
+      mvn --batch-mode --no-transfer-progress clean verify
+    displayName: 'Build and run unit tests'
+
+  # 5. Publish build output
+  - publish: '$(System.DefaultWorkingDirectory)/target'
+    artifact: 'java-build'
+    displayName: 'Publish build output'
