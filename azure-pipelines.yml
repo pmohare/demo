@@ -43,14 +43,14 @@ stages:
           - script: |
               echo "Checking Maven target directory..."
               ls -lah target
-              echo "Searching for WAR files..."
-              find target -type f -name "*.war" -print
-              test -n "$(find target -type f -name '*.war' -print -quit)" || exit 1
-            displayName: Verify WAR Artifact
+              echo "Searching for jar files..."
+              find target -type f -name "*.jar" -print
+              test -n "$(find target -type f -name '*.jar' -print -quit)" || exit 1
+            displayName: Verify jar Artifact
 
           - publish: '$(System.DefaultWorkingDirectory)/target'
             artifact: java-build
-            displayName: Publish WAR Artifact
+            displayName: Publish jar Artifact
             condition: succeeded()
 
   - stage: Deploy
@@ -70,10 +70,10 @@ stages:
             displayName: Verify Downloaded Artifact
 
           - task: AzureWebApp@1
-            displayName: Deploy Spring Boot WAR
+            displayName: Deploy Spring Boot jar
             inputs:
               azureSubscription: 'Azure-CICD-Connection-Deployment'
               appType: webAppLinux
               appName: 'pmohare-demo1'
-              package: '$(Pipeline.Workspace)/java-build/**/*.war'
+              package: '$(Pipeline.Workspace)/java-build/**/*.jar'
               runtimeStack: 'JAVA|21-java21'
