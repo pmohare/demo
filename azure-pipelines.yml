@@ -1,40 +1,70 @@
 
-# Java 21 CI Pipeline
-# Source: GitHub
-# Build: Maven
-# Output: java-build artifact
-
 trigger: none
 pr: none
 
 pool:
   vmImage: ubuntu-latest
 
-steps:
-  # 1. Checkout source code
-  - checkout: self
-    displayName: 'Checkout source code'
+stages:
+  - stage: Build
+    displayName: Build and Test
+    jobs:
+      - job: BuildJob
+        displayName: Build Java 21 Application
+        steps:
+          - checkout: self
 
-  # 2. Configure Java 21
-  - task: JavaToolInstaller@0
-    displayName: 'Set up Java 21'
-    inputs:
-      versionSpec: '21'
-      jdkArchitectureOption: 'x64'
-      jdkSourceOption: 'PreInstalled'
+          - task: JavaToolInstaller@0
+            displayName: Set up Java 21
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: x64
+              jdkSourceOption: PreInstalled
 
-  # 3. Verify Java and Maven
-  - script: |
-      java -version
-      mvn -version
-    displayName: 'Verify Java and Maven'
+          - script: |
+              java -version
+              mvn -version
+            displayName: Verify Java and Maven
 
-  # 4. Build project and run unit tests
-  - script: |
-      mvn --batch-mode --no-transfer-progress clean verify
-    displayName: 'Build and run unit tests'
+          - script: |
+              mvn --batch-mode --no-transfer-progress clean verify
+            displayName: Build and Run Unit Tests
 
-  # 5. Publish build output
-  - publish: '$(System.DefaultWorkingDirectory)/target'
-    artifact: 'java-build'
-    displayName: 'Publish build output'
+          - task: PublishTestResults@2
+            displayName: Publish Unit Test Results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+              mergeTestResults: true
+              failTaskOnFailedTests: true
+              testRunTitle: Java Unit Tests
+
+          - publish: '$(System.DefaultWorkingDirectory)/target'
+            artifact: java-build
+            displayName: Publish JAR Artifact
+            condition: succeeded()
+
+  - stage: Deploy
+    displayName: Deploy to Azure
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - deployment: DeployWebApp
+        displayName: Deploy to pmohare-demo1
+        environment: dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: java-build
+
+                - task: AzureWebApp@1
+                  displayName: Deploy Spring Boot JAR
+                  inputs:
+                    azureSubscription: Azure-CICD-Connection
+                    appType: webAppLinux
+                    appName: pmohare-demo1
+                    package: '$(Pipeline.Workspace)/java-build/*.jar'
+                    runtimeStack: 'JAVA|21-java21'
