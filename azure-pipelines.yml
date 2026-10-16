@@ -50,21 +50,17 @@ stages:
     dependsOn: Build
     condition: succeeded()
     jobs:
-      - deployment: DeployWebApp
+      - job: DeployWebApp
         displayName: Deploy to pmohare-demo1
-        environment: dev
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: java-build
+        steps:
+          - download: current
+            artifact: java-build
 
-                - task: AzureWebApp@1
-                  displayName: Deploy Spring Boot JAR
-                  inputs:
-                    azureSubscription: Azure-CICD-Connection
-                    appType: webAppLinux
-                    appName: pmohare-demo1
-                    package: '$(Pipeline.Workspace)/java-build/*.jar'
-                    runtimeStack: 'JAVA|21-java21'
+          - task: AzureWebApp@1
+            displayName: Deploy Spring Boot JAR
+            inputs:
+              azureSubscription: 'Azure-CICD-Connection'
+              appType: webAppLinux
+              appName: 'pmohare-demo1'
+              package: '$(Pipeline.Workspace)/java-build/*.jar'
+              runtimeStack: 'JAVA|21-java21'
