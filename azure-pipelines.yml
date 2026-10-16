@@ -41,16 +41,29 @@ stages:
               testRunTitle: Java Unit Tests
 
           - script: |
-              echo "Checking Maven target directory..."
-              ls -lah target
-              echo "Searching for jar files..."
-              find target -type f -name "*.jar" -print
-              test -n "$(find target -type f -name '*.jar' -print -quit)" || exit 1
-            displayName: Verify jar Artifact
+              set -eu
+              echo "Generated JAR files:"
+              find target -maxdepth 1 -type f -name "*.jar" -print
 
-          - publish: '$(System.DefaultWorkingDirectory)/target'
+              JAR_FILE=$(find target -maxdepth 1 -type f \
+                -name "*.jar" ! -name "*-original.jar" \
+                -print -quit)
+
+              if [ -z "$JAR_FILE" ]; then
+                echo "ERROR: No deployable JAR found in target."
+                exit 1
+              fi
+
+              mkdir -p "$(Build.ArtifactStagingDirectory)/app"
+              cp "$JAR_FILE" "$(Build.ArtifactStagingDirectory)/app/app.jar"
+
+              echo "Selected executable JAR: $JAR_FILE"
+              ls -lh "$(Build.ArtifactStagingDirectory)/app/app.jar"
+            displayName: Select Executable JAR
+
+          - publish: '$(Build.ArtifactStagingDirectory)/app'
             artifact: java-build
-            displayName: Publish jar Artifact
+            displayName: Publish Executable JAR
             condition: succeeded()
 
   - stage: Deploy
@@ -65,15 +78,15 @@ stages:
             artifact: java-build
 
           - script: |
-              echo "Downloaded artifact contents:"
-              find "$(Pipeline.Workspace)/java-build" -type f -print
-            displayName: Verify Downloaded Artifact
+              echo "Deployment package:"
+              ls -lh "$(Pipeline.Workspace)/java-build/app.jar"
+            displayName: Verify Deployment Package
 
           - task: AzureWebApp@1
-            displayName: Deploy Spring Boot jar
+            displayName: Deploy Spring Boot JAR
             inputs:
               azureSubscription: 'Azure-CICD-Connection-Deployment'
               appType: webAppLinux
               appName: 'pmohare-demo1'
-              package: '$(Pipeline.Workspace)/java-build/**/*.jar'
+              package: '$(Pipeline.Workspace)/java-build/app.jar'
               runtimeStack: 'JAVA|21-java21'
