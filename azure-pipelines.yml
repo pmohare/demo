@@ -40,9 +40,17 @@ stages:
               failTaskOnFailedTests: true
               testRunTitle: Java Unit Tests
 
+          - script: |
+              echo "Checking Maven target directory..."
+              ls -lah target
+              echo "Searching for WAR files..."
+              find target -type f -name "*.war" -print
+              test -n "$(find target -type f -name '*.war' -print -quit)" || exit 1
+            displayName: Verify WAR Artifact
+
           - publish: '$(System.DefaultWorkingDirectory)/target'
             artifact: java-build
-            displayName: Publish JAR Artifact
+            displayName: Publish WAR Artifact
             condition: succeeded()
 
   - stage: Deploy
@@ -56,11 +64,16 @@ stages:
           - download: current
             artifact: java-build
 
+          - script: |
+              echo "Downloaded artifact contents:"
+              find "$(Pipeline.Workspace)/java-build" -type f -print
+            displayName: Verify Downloaded Artifact
+
           - task: AzureWebApp@1
-            displayName: Deploy Spring Boot JAR
+            displayName: Deploy Spring Boot WAR
             inputs:
               azureSubscription: 'Azure-CICD-Connection-Deployment'
               appType: webAppLinux
               appName: 'pmohare-demo1'
-              package: '$(Pipeline.Workspace)/java-build/*.war'
+              package: '$(Pipeline.Workspace)/java-build/**/*.war'
               runtimeStack: 'JAVA|21-java21'
