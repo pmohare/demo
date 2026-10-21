@@ -1,55 +1,270 @@
+trigger: none
+pr: none
 
-              TARGET_STATUS="Done"
+pool:
+  vmImage: ubuntu-latest
 
-              if [ "$PIPELINE_RESULT" = "FAILURE" ]; then
-                TARGET_STATUS="In Progress"
-              fi
+variables:
+  - group: Jira-Credentials
 
-              echo "Target Jira status: $TARGET_STATUS"
+stages:
+  # ==========================================
+  # STAGE 1: BUILD, TEST AND SONARQUBE ANALYSIS
+  # ==========================================
+  - stage: Build
+    displayName: Build, Test and Code Analysis
+    jobs:
+      - job: BuildJob
+        displayName: Build Java 21 Application
+        steps:
+          - checkout: self
+            fetchDepth: 0
 
-              TRANSITION_HTTP=$(curl -sS \
-                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-                -H "Accept: application/json" \
-                -o /tmp/jira-transitions.json \
-                -w "%{http_code}" \
-                "$JIRA_BASE_URL/rest/api/3/issue/$JIRA_ISSUE_KEY/transitions")
+          - task: SonarCloudPrepare@3
+            displayName: Prepare SonarQube Cloud Analysis
+            inputs:
+              SonarCloud: 'Sonar'
+              organization: 'pmohare'
+              scannerMode: 'other'
+              extraProperties: |
+                sonar.projectKey=pmohare_demo
 
-              if [ "$TRANSITION_HTTP" -lt 200 ] || [ "$TRANSITION_HTTP" -ge 300 ]; then
-                echo "ERROR: Could not retrieve Jira transitions (HTTP $TRANSITION_HTTP)."
-                cat /tmp/jira-transitions.json
+          - task: JavaToolInstaller@0
+            displayName: Set up Java 21
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: x64
+              jdkSourceOption: PreInstalled
+
+          - script: |
+              java -version
+              mvn -version
+            displayName: Verify Java and Maven
+
+          - task: Maven@4
+            displayName: Build, Test and SonarQube Analysis
+            inputs:
+              mavenPOMFile: 'pom.xml'
+              goals: 'clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar'
+              options: '--batch-mode --no-transfer-progress'
+              publishJUnitResults: true
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '1.21'
+              mavenVersionOption: 'Default'
+
+          - task: SonarCloudPublish@3
+            displayName: Publish SonarQube Quality Gate
+            inputs:
+              pollingTimeoutSec: '300'
+
+          - script: |
+              set -eu
+
+              echo "Generated JAR files:"
+              find target -maxdepth 1 -type f -name "*.jar" -print
+
+              JAR_FILE=$(find target -maxdepth 1 -type f \
+                -name "*.jar" ! -name "*-original.jar" \
+                -print -quit)
+
+              if [ -z "$JAR_FILE" ]; then
+                echo "ERROR: No deployable JAR found in target."
                 exit 1
               fi
 
-              TRANSITION_ID=$(jq -r --arg status "$TARGET_STATUS" '
-                [.transitions[]
-                 | select((.to.name | ascii_downcase) == ($status | ascii_downcase))
-                 | .id][0] // empty
-              ' /tmp/jira-transitions.json)
+              mkdir -p "$(Build.ArtifactStagingDirectory)/app"
+              cp "$JAR_FILE" "$(Build.ArtifactStagingDirectory)/app/app.jar"
 
-              if [ -z "$TRANSITION_ID" ]; then
-                echo "ERROR: No available Jira transition to '$TARGET_STATUS'."
-                jq -r '.transitions[] | "\(.name) -> \(.to.name)"' /tmp/jira-transitions.json
+              echo "Selected executable JAR: $JAR_FILE"
+              ls -lh "$(Build.ArtifactStagingDirectory)/app/app.jar"
+            displayName: Select Executable JAR
+
+          - publish: '$(Build.ArtifactStagingDirectory)/app'
+            artifact: java-build
+            displayName: Publish Executable JAR
+            condition: succeeded()
+
+  # ==========================================
+  # STAGE 2: DEPLOY TO AZURE APP SERVICE
+  # ==========================================
+  - stage: Deploy
+    displayName: Deploy to Azure
+    dependsOn: Build
+    condition: succeeded()
+
+    jobs:
+      - job: DeployWebApp
+        displayName: Deploy to pmohare-demo1
+        steps:
+          - download: current
+            artifact: java-build
+
+          - script: |
+              echo "Deployment package:"
+              ls -lh "$(Pipeline.Workspace)/java-build/app.jar"
+            displayName: Verify Deployment Package
+
+          - task: AzureWebApp@1
+            displayName: Deploy Spring Boot JAR
+            inputs:
+              azureSubscription: 'Azure-CICD-Connection-Deployment'
+              appType: webAppLinux
+              appName: 'pmohare-demo1'
+              package: '$(Pipeline.Workspace)/java-build/app.jar'
+              runtimeStack: 'JAVA|21-java21'
+
+  # ==========================================
+  # STAGE 3: REPORT RESULT TO JIRA
+  # ==========================================
+  - stage: NotifyJira
+    displayName: Report Pipeline Result to Jira
+    dependsOn:
+      - Build
+      - Deploy
+    condition: always()
+
+    jobs:
+      - job: JiraCallback
+        displayName: Comment on Jira and Reopen on Failure
+        condition: always()
+
+        variables:
+          BUILD_STAGE_RESULT: $[ stageDependencies.Build.BuildJob.result ]
+          DEPLOY_STAGE_RESULT: $[ stageDependencies.Deploy.DeployWebApp.result ]
+
+        steps:
+          - checkout: none
+
+          - script: |
+              set -euo pipefail
+
+              if [ -z "${JIRA_ISSUE_KEY:-}" ]; then
+                echo "ERROR: JiraIssueKey was not passed by Jira automation."
                 exit 1
               fi
 
-              TRANSITION_BODY=$(jq -n --arg id "$TRANSITION_ID" '{
-                transition: { id: $id }
+              case "$JIRA_ISSUE_KEY" in
+                *[!A-Z0-9-]*)
+                  echo "ERROR: Jira issue key has an unexpected format."
+                  exit 1
+                  ;;
+              esac
+
+              echo "Build stage result: $BUILD_STAGE_RESULT"
+              echo "Deploy stage result: $DEPLOY_STAGE_RESULT"
+
+              if [ "$BUILD_STAGE_RESULT" = "Succeeded" ] && \
+                 [ "$DEPLOY_STAGE_RESULT" = "Succeeded" ]; then
+                PIPELINE_RESULT="SUCCESS"
+                DETAILS="Build, tests, SonarQube Quality Gate and deployment succeeded."
+              else
+                PIPELINE_RESULT="FAILURE"
+                DETAILS="Build or deployment failed, was skipped, or did not complete successfully."
+              fi
+
+              COMMENT_TEXT="Azure pipeline result: ${PIPELINE_RESULT}. Build stage: ${BUILD_STAGE_RESULT}. Deploy stage: ${DEPLOY_STAGE_RESULT}. Details: ${DETAILS} Pipeline run: ${BUILD_URL}"
+
+              COMMENT_BODY=$(jq -n --arg text "$COMMENT_TEXT" '{
+                body: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        {
+                          type: "text",
+                          text: $text
+                        }
+                      ]
+                    }
+                  ]
+                }
               }')
 
-              TRANSITION_HTTP=$(curl -sS \
+              echo "Posting pipeline result to Jira issue $JIRA_ISSUE_KEY"
+
+              COMMENT_RESPONSE=$(curl -sS \
                 -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
                 -H "Accept: application/json" \
                 -H "Content-Type: application/json" \
-                -o /tmp/jira-transition-response.json \
-                -w "%{http_code}" \
                 -X POST \
-                --data "$TRANSITION_BODY" \
-                "$JIRA_BASE_URL/rest/api/3/issue/$JIRA_ISSUE_KEY/transitions")
+                -o /tmp/jira-comment-response.json \
+                -w "%{http_code}" \
+                --data "$COMMENT_BODY" \
+                "$JIRA_BASE_URL/rest/api/3/issue/$JIRA_ISSUE_KEY/comment")
 
-              if [ "$TRANSITION_HTTP" -lt 200 ] || [ "$TRANSITION_HTTP" -ge 300 ]; then
-                echo "ERROR: Jira transition failed (HTTP $TRANSITION_HTTP)."
-                cat /tmp/jira-transition-response.json
+              if [ "$COMMENT_RESPONSE" -lt 200 ] || \
+                 [ "$COMMENT_RESPONSE" -ge 300 ]; then
+                echo "ERROR: Jira comment request failed with HTTP $COMMENT_RESPONSE."
+                cat /tmp/jira-comment-response.json
                 exit 1
               fi
 
-              echo "Jira issue transitioned to '$TARGET_STATUS'."
+              echo "Jira pipeline result comment added."
+
+              if [ "$PIPELINE_RESULT" = "FAILURE" ]; then
+                echo "Checking Jira transitions available for this issue..."
+
+                TRANSITION_HTTP=$(curl -sS \
+                  -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                  -H "Accept: application/json" \
+                  -o /tmp/jira-transitions.json \
+                  -w "%{http_code}" \
+                  "$JIRA_BASE_URL/rest/api/3/issue/$JIRA_ISSUE_KEY/transitions")
+
+                if [ "$TRANSITION_HTTP" -lt 200 ] || \
+                   [ "$TRANSITION_HTTP" -ge 300 ]; then
+                  echo "WARNING: Could not retrieve Jira transitions (HTTP $TRANSITION_HTTP)."
+                  cat /tmp/jira-transitions.json
+                  exit 1
+                fi
+
+                TRANSITION_ID=$(jq -r '
+                  [.transitions[]
+                   | select(.name | test("reopen|re-open|to do|in progress|open"; "i"))]
+                  | .[0].id // empty
+                ' /tmp/jira-transitions.json)
+
+                if [ -z "$TRANSITION_ID" ]; then
+                  echo "WARNING: No suitable reopen transition is currently available."
+                  echo "The failure comment was added, but the issue was not reopened."
+                  echo "Check the Jira workflow and available transitions."
+                  exit 1
+                fi
+
+                TRANSITION_BODY=$(jq -n --arg id "$TRANSITION_ID" '{
+                  transition: { id: $id }
+                }')
+
+                TRANSITION_HTTP=$(curl -sS \
+                  -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                  -H "Accept: application/json" \
+                  -H "Content-Type: application/json" \
+                  -o /tmp/jira-transition-response.json \
+                  -w "%{http_code}" \
+                  -X POST \
+                  --data "$TRANSITION_BODY" \
+                  "$JIRA_BASE_URL/rest/api/3/issue/$JIRA_ISSUE_KEY/transitions")
+
+                if [ "$TRANSITION_HTTP" -lt 200 ] || \
+                   [ "$TRANSITION_HTTP" -ge 300 ]; then
+                  echo "ERROR: Jira reopen transition failed with HTTP $TRANSITION_HTTP."
+                  cat /tmp/jira-transition-response.json
+                  exit 1
+                fi
+
+                echo "Jira issue transitioned using the available workflow transition."
+              else
+                echo "Pipeline succeeded. Jira issue status is unchanged."
+              fi
+            displayName: Post Result and Reopen Jira on Failure
+            env:
+              JIRA_BASE_URL: 'https://prashants-oes-b9363647.atlassian.net'
+              JIRA_EMAIL: $(JIRA_EMAIL)
+              JIRA_API_TOKEN: $(JIRA_API_TOKEN)
+              JIRA_ISSUE_KEY: $(JiraIssueKey)
+              BUILD_STAGE_RESULT: $(BUILD_STAGE_RESULT)
+              DEPLOY_STAGE_RESULT: $(DEPLOY_STAGE_RESULT)
+              BUILD_URL: $(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)
