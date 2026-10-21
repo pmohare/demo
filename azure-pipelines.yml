@@ -13,6 +13,16 @@ stages:
         displayName: Build Java 21 Application
         steps:
           - checkout: self
+            fetchDepth: 0
+
+          - task: SonarCloudPrepare@3
+            displayName: Prepare SonarQube Cloud Analysis
+            inputs:
+              SonarCloud: 'SonarCloud-Connection'
+              organization: 'pmohare'
+              scannerMode: 'other'
+              extraProperties: |
+                sonar.projectKey=pmohare_demo
 
           - task: JavaToolInstaller@0
             displayName: Set up Java 21
