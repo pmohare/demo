@@ -4,6 +4,122 @@ pr: none
 pool:
   vmImage: ubuntu-latest
 
-steps:
-  - script: echo "YAML validation successful"
-    displayName: Validate YAML
+stages:
+  # ==========================================
+  # STAGE 1: BUILD, TEST AND SONARQUBE ANALYSIS
+  # ==========================================
+  - stage: Build
+    displayName: Build, Test and Code Analysis
+    jobs:
+      - job: BuildJob
+        displayName: Build Java 21 Application
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          # Prepare SonarQube Cloud analysis
+          - task: SonarCloudPrepare@3
+            displayName: Prepare SonarQube Cloud Analysis
+            inputs:
+              SonarCloud: 'SonarCloud-Connection'
+              organization: 'pmohare'
+              scannerMode: 'other'
+              extraProperties: |
+                sonar.projectKey=pmohare_demo
+
+          # Set up Java 21
+          - task: JavaToolInstaller@0
+            displayName: Set up Java 21
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: x64
+              jdkSourceOption: PreInstalled
+
+          # Verify Java and Maven
+          - script: |
+              java -version
+              mvn -version
+            displayName: Verify Java and Maven
+
+          # Build application, run tests and analyze code
+          - script: |
+              mvn --batch-mode --no-transfer-progress clean verify sonar:sonar
+            displayName: Build, Test and SonarQube Analysis
+
+          # Publish unit test results even if tests fail
+          - task: PublishTestResults@2
+            displayName: Publish Unit Test Results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+              mergeTestResults: true
+              failTaskOnFailedTests: true
+              testRunTitle: Java Unit Tests
+
+          # Publish SonarQube Cloud Quality Gate result
+          - task: SonarCloudPublish@3
+            displayName: Publish SonarQube Quality Gate
+            inputs:
+              pollingTimeoutSec: '300'
+
+          # Select the executable Spring Boot JAR
+          - script: |
+              set -eu
+
+              echo "Generated JAR files:"
+              find target -maxdepth 1 -type f -name "*.jar" -print
+
+              JAR_FILE=$(find target -maxdepth 1 -type f \
+                -name "*.jar" ! -name "*-original.jar" \
+                -print -quit)
+
+              if [ -z "$JAR_FILE" ]; then
+                echo "ERROR: No deployable JAR found in target."
+                exit 1
+              fi
+
+              mkdir -p "$(Build.ArtifactStagingDirectory)/app"
+              cp "$JAR_FILE" "$(Build.ArtifactStagingDirectory)/app/app.jar"
+
+              echo "Selected executable JAR: $JAR_FILE"
+              ls -lh "$(Build.ArtifactStagingDirectory)/app/app.jar"
+            displayName: Select Executable JAR
+
+          # Publish JAR for the deployment stage
+          - publish: '$(Build.ArtifactStagingDirectory)/app'
+            artifact: java-build
+            displayName: Publish Executable JAR
+            condition: succeeded()
+
+  # ==========================================
+  # STAGE 2: DEPLOY TO AZURE APP SERVICE
+  # ==========================================
+  - stage: Deploy
+    displayName: Deploy to Azure
+    dependsOn: Build
+    condition: succeeded()
+
+    jobs:
+      - job: DeployWebApp
+        displayName: Deploy to pmohare-demo1
+        steps:
+          # Download the published JAR
+          - download: current
+            artifact: java-build
+
+          # Verify deployment package
+          - script: |
+              echo "Deployment package:"
+              ls -lh "$(Pipeline.Workspace)/java-build/app.jar"
+            displayName: Verify Deployment Package
+
+          # Deploy Spring Boot JAR to Azure App Service
+          - task: AzureWebApp@1
+            displayName: Deploy Spring Boot JAR
+            inputs:
+              azureSubscription: 'Azure-CICD-Connection-Deployment'
+              appType: webAppLinux
+              appName: 'pmohare-demo1'
+              package: '$(Pipeline.Workspace)/java-build/app.jar'
+              runtimeStack: 'JAVA|21-java21'
