@@ -41,11 +41,19 @@ stages:
               mvn -version
             displayName: Verify Java and Maven
 
-          # Build application, run tests and analyze code
-          - script: |
-              mvn --batch-mode --no-transfer-progress clean verify sonar:sonar
-            displayName: Build, Test and SonarQube Analysis
-
+- task: Maven@4
+  displayName: Build, Test and SonarQube Analysis
+  inputs:
+    mavenPOMFile: 'pom.xml'
+    goals: 'clean verify'
+    options: '--batch-mode --no-transfer-progress'
+    publishJUnitResults: true
+    testResultsFiles: '**/surefire-reports/TEST-*.xml'
+    javaHomeOption: 'JDKVersion'
+    jdkVersionOption: '1.21'
+    mavenVersionOption: 'Default'
+    sonarQubeRunAnalysis: true
+    
           # Publish unit test results even if tests fail
           - task: PublishTestResults@2
             displayName: Publish Unit Test Results
