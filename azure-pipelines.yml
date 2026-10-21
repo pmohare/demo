@@ -1,4 +1,3 @@
-```yaml
 trigger: none
 pr: none
 
@@ -121,4 +120,3 @@ stages:
               appName: 'pmohare-demo1'
               package: '$(Pipeline.Workspace)/java-build/app.jar'
               runtimeStack: 'JAVA|21-java21'
-```
