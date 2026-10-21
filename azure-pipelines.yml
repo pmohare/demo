@@ -1,3 +1,4 @@
+```yaml
 trigger: none
 pr: none
 
@@ -41,29 +42,18 @@ stages:
               mvn -version
             displayName: Verify Java and Maven
 
-- task: Maven@4
-  displayName: Build, Test and SonarQube Analysis
-  inputs:
-    mavenPOMFile: 'pom.xml'
-    goals: 'clean verify'
-    options: '--batch-mode --no-transfer-progress'
-    publishJUnitResults: true
-    testResultsFiles: '**/surefire-reports/TEST-*.xml'
-    javaHomeOption: 'JDKVersion'
-    jdkVersionOption: '1.21'
-    mavenVersionOption: 'Default'
-    sonarQubeRunAnalysis: true
-    
-          # Publish unit test results even if tests fail
-          - task: PublishTestResults@2
-            displayName: Publish Unit Test Results
-            condition: succeededOrFailed()
+          # Build, run tests and perform SonarQube analysis
+          - task: Maven@4
+            displayName: Build, Test and SonarQube Analysis
             inputs:
-              testResultsFormat: JUnit
+              mavenPOMFile: 'pom.xml'
+              goals: 'clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar'
+              options: '--batch-mode --no-transfer-progress'
+              publishJUnitResults: true
               testResultsFiles: '**/surefire-reports/TEST-*.xml'
-              mergeTestResults: true
-              failTaskOnFailedTests: true
-              testRunTitle: Java Unit Tests
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '1.21'
+              mavenVersionOption: 'Default'
 
           # Publish SonarQube Cloud Quality Gate result
           - task: SonarCloudPublish@3
@@ -94,7 +84,7 @@ stages:
               ls -lh "$(Build.ArtifactStagingDirectory)/app/app.jar"
             displayName: Select Executable JAR
 
-          # Publish JAR for the deployment stage
+          # Publish JAR for deployment
           - publish: '$(Build.ArtifactStagingDirectory)/app'
             artifact: java-build
             displayName: Publish Executable JAR
@@ -131,3 +121,4 @@ stages:
               appName: 'pmohare-demo1'
               package: '$(Pipeline.Workspace)/java-build/app.jar'
               runtimeStack: 'JAVA|21-java21'
+```
